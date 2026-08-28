@@ -15,14 +15,20 @@ import (
 func TestLoginAndCache(t *testing.T) {
 	var calls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if r.URL.Path != "/user/login-submit/" {
+		switch r.URL.Path {
+		case "/user/login/":
+			_, _ = io.WriteString(w, "login")
+		case "/user/login-submit/":
+			calls++
+			if r.FormValue("login") != "user@example.com" || r.FormValue("password") != "secret" {
+				t.Fatal("credentials missing")
+			}
+			_, _ = io.WriteString(w, `{"result":1}`)
+		case "/api-rest/v1/b24token":
+			_, _ = io.WriteString(w, `{"token":"panel-token"}`)
+		default:
 			t.Fatalf("path = %s", r.URL.Path)
 		}
-		if r.FormValue("login") != "user@example.com" || r.FormValue("password") != "secret" {
-			t.Fatal("credentials missing")
-		}
-		_, _ = io.WriteString(w, `{"result":1}`)
 	}))
 	defer upstream.Close()
 	c, err := New(Config{AppURL: upstream.URL, DataURL: upstream.URL, Email: "user@example.com", Password: "secret"}, slog.Default())
@@ -81,5 +87,52 @@ func TestDoDataRejectsUnsafePath(t *testing.T) {
 	c, _ := New(Config{AppURL: "https://example.com", DataURL: "https://example.com", APIKey: "key"}, slog.Default())
 	if _, _, err := c.DoData(context.Background(), http.MethodGet, "/api-data/v1/../secret", nil, nil); err == nil {
 		t.Fatal("expected unsafe path error")
+	}
+}
+
+func TestPanelSessionDiscoversProjectAndPaginates(t *testing.T) {
+	var loginCalls, mentionCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user/login/":
+			_, _ = io.WriteString(w, "login")
+		case "/user/login-submit/":
+			loginCalls++
+			_, _ = io.WriteString(w, `{"result":1}`)
+		case "/api-rest/v1/b24token":
+			_, _ = io.WriteString(w, `{"token":"session-token"}`)
+		case "/api/graphql":
+			if r.Header.Get("tknb24") != "session-token" {
+				t.Fatal("missing panel token")
+			}
+			var request struct {
+				Operation string         `json:"operationName"`
+				Variables map[string]any `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if request.Operation == "getUserProjects" {
+				_, _ = io.WriteString(w, `{"data":{"getUserProjects":[{"project":{"id":139,"name":"BAJA"}}]}}`)
+				return
+			}
+			mentionCalls++
+			if mentionCalls == 1 {
+				_, _ = io.WriteString(w, `{"data":{"getMentions":{"count":501,"results":[{"id":1,"title":"viral","createdDate":"2026-08-28T10:00:00+02:00","pageCategory":11,"sentiment":1,"host":{"name":"creator"}}]}}}`)
+			} else {
+				_, _ = io.WriteString(w, `{"data":{"getMentions":{"count":501,"results":[{"id":2,"title":"other","createdDate":"2026-08-27T10:00:00+02:00","pageCategory":5,"sentiment":0,"host":{"name":"meta"}}]}}}`)
+			}
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	c, _ := New(Config{AppURL: upstream.URL, DataURL: upstream.URL, Email: "user@example.com", Password: "secret", Timeout: time.Second}, slog.Default())
+	got, err := c.SyncMentions(context.Background(), SyncRequest{DateFrom: "2026-08-01", DateTo: "2026-08-28", Category: "tiktok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loginCalls != 1 || mentionCalls != 2 || got.ProjectID != "139" || got.Count != 1 {
+		t.Fatalf("login=%d mentions=%d result=%+v", loginCalls, mentionCalls, got)
 	}
 }

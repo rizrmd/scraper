@@ -37,7 +37,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
-		logger.Info("brand24 scraper listening", "addr", *addr, "data_api_configured", cfg.APIKey != "")
+		logger.Info("brand24 scraper listening", "addr", *addr, "brand24_configured", cfg.APIKey != "" || (cfg.Email != "" && cfg.Password != ""))
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped", "error", err)
 			os.Exit(1)

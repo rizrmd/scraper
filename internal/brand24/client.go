@@ -30,6 +30,7 @@ type Client struct {
 	mu              sync.Mutex
 	authenticated   bool
 	authenticatedAt time.Time
+	panelToken      string
 }
 type UpstreamError struct {
 	Status int
@@ -55,8 +56,10 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	return &Client{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout, Jar: jar}, logger: logger}, nil
 }
 
-func (c *Client) DataConfigured() bool { return c.cfg.APIKey != "" }
-func (c *Client) AccountID() string    { return c.cfg.AccountID }
+func (c *Client) DataConfigured() bool {
+	return c.cfg.APIKey != "" || (c.cfg.Email != "" && c.cfg.Password != "")
+}
+func (c *Client) AccountID() string { return c.cfg.AccountID }
 
 func (c *Client) Login(ctx context.Context) error {
 	c.mu.Lock()
@@ -68,6 +71,14 @@ func (c *Client) Login(ctx context.Context) error {
 		return errors.New("BRAND24_EMAIL and BRAND24_PASSWORD are required")
 	}
 	form := url.Values{"login": {c.cfg.Email}, "password": {c.cfg.Password}, "remember_me": {"1"}, "backurl": {"/panel"}}
+	loginPage, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.cfg.AppURL, "/")+"/user/login/?backurl=%2Fpanel", nil)
+	if response, err := c.http.Do(loginPage); err == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		response.Body.Close()
+	}
+	form.Set("outer_user_from", "")
+	form.Set("outer_user_id", "")
+	form.Set("outer_user_signed_request", "")
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.cfg.AppURL, "/")+"/user/login-submit/", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
@@ -84,6 +95,19 @@ func (c *Client) Login(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &result) != nil || result.Result != 1 {
 		return fmt.Errorf("Brand24 login rejected (HTTP %d, result %d)", resp.StatusCode, result.Result)
 	}
+	tokenRequest, _ := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.cfg.AppURL, "/")+"/api-rest/v1/b24token", nil)
+	tokenResponse, err := c.http.Do(tokenRequest)
+	if err != nil {
+		return fmt.Errorf("panel token request: %w", err)
+	}
+	defer tokenResponse.Body.Close()
+	var tokenPayload struct {
+		Token string `json:"token"`
+	}
+	if tokenResponse.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(tokenResponse.Body, 1<<20)).Decode(&tokenPayload) != nil || tokenPayload.Token == "" {
+		return errors.New("Brand24 login succeeded but panel token was unavailable")
+	}
+	c.panelToken = tokenPayload.Token
 	c.authenticated, c.authenticatedAt = true, time.Now()
 	return nil
 }
@@ -154,6 +178,9 @@ type SyncResult struct {
 }
 
 func (c *Client) SyncMentions(ctx context.Context, in SyncRequest) (*SyncResult, error) {
+	if c.cfg.APIKey == "" {
+		return c.syncPanelMentions(ctx, in)
+	}
 	if _, err := strconv.ParseInt(in.ProjectID, 10, 64); err != nil {
 		return nil, errors.New("project_id must be numeric")
 	}

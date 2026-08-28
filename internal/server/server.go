@@ -36,7 +36,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	if !s.client.DataConfigured() {
-		write(w, 503, map[string]any{"status": "not_ready", "reason": "BRAND24_API_KEY is not configured"})
+		write(w, 503, map[string]any{"status": "not_ready", "reason": "Brand24 login credentials or API key are not configured"})
 		return
 	}
 	write(w, 200, map[string]any{"status": "ready"})
@@ -48,7 +48,7 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		write(w, 502, map[string]any{"status": "error", "error": err.Error()})
 		return
 	}
-	write(w, 200, map[string]any{"status": "authenticated", "data_api_configured": s.client.DataConfigured(), "account_id_configured": s.client.AccountID() != ""})
+	write(w, 200, map[string]any{"status": "authenticated", "source": "panel_session", "project_discovery": "automatic"})
 }
 func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 	var in brand24.SyncRequest

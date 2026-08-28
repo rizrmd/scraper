@@ -18,7 +18,7 @@ Contoh sinkronisasi:
 
 ```bash
 curl -sS -H "Authorization: Bearer $API_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"date_from":"2026-01-01","date_to":"2026-08-28","source":"tiktok"}' \
+  -d '{"date_from":"2026-01-01","date_to":"2026-08-28","category":"tiktok"}' \
   http://localhost:3000/v1/brand24/sync/mentions
 ```
 

@@ -17,7 +17,8 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", env("ADDR", "0.0.0.0:3000"), "HTTP listen address")
+	defaultAddr := "0.0.0.0:" + env("PORT", "3000")
+	addr := flag.String("addr", env("ADDR", defaultAddr), "HTTP listen address")
 	flag.Parse()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := brand24.Config{

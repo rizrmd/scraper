@@ -197,16 +197,17 @@ func TestLiveBrand24Debug(t *testing.T) {
 			ProjectID: strconv.FormatInt(p.Project.ID, 10),
 			DateFrom:  "2026-08-01",
 			DateTo:    "2026-08-31",
-			Category:  "facebook,instagram",
-			Limit:     10,
+			Category:  "tiktok",
+			Limit:     5,
 		})
 		if err != nil {
 			t.Logf("Project %s (%d) err: %v", p.Project.Name, p.Project.ID, err)
 		} else {
-			t.Logf("Project %s (%d) META mentions count=%d", p.Project.Name, p.Project.ID, res.Count)
+			t.Logf("Project %s (%d) TIKTOK mentions count=%d", p.Project.Name, p.Project.ID, res.Count)
 			for i, m := range res.Mentions {
 				t.Logf("  Mention %d: %s", i, string(m))
 			}
 		}
+		break
 	}
 }

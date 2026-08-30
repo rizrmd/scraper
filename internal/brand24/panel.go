@@ -192,6 +192,11 @@ func (c *Client) syncPanelMentions(ctx context.Context, in SyncRequest) (*SyncRe
 					sem <- struct{}{}
 					defer func() { <-sem }()
 					data.Mentions.Results[idx].OpenURL = c.ResolveRedirect(ctx, data.Mentions.Results[idx].OpenURL)
+					if authorMap, ok := data.Mentions.Results[idx].Author.(map[string]any); ok {
+						if rawAuthorURL, ok := authorMap["url"].(string); ok && rawAuthorURL != "" {
+							authorMap["url"] = c.ResolveRedirect(ctx, rawAuthorURL)
+						}
+					}
 				}(i)
 			}
 			wg.Wait()
@@ -365,6 +370,13 @@ func (c *Client) ResolveRedirect(ctx context.Context, raw string) string {
 	if finalURL != "" && !isBrand24OrRedirectHost(strings.ToLower(resp.Request.URL.Hostname())) {
 		redirectCache.Store(raw, finalURL)
 		return finalURL
+	}
+
+	if loc := resp.Header.Get("Location"); loc != "" {
+		if locURL, err := url.Parse(loc); err == nil && !isBrand24OrRedirectHost(strings.ToLower(locURL.Hostname())) {
+			redirectCache.Store(raw, loc)
+			return loc
+		}
 	}
 
 	redirectCache.Store(raw, extracted)

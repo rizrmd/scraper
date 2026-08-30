@@ -173,3 +173,26 @@ func TestExtractAndResolveTargetURL(t *testing.T) {
 		t.Logf("ResolveTargetURL on mock redirect = %q", resolved)
 	}
 }
+
+func TestLiveBrand24Debug(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	c, err := New(Config{AppURL: "https://app.brand24.com", DataURL: "https://api-data.brand24.com", Email: "officialcreatorhub.id@gmail.com", Password: "Creatorhub.24", Timeout: 30 * time.Second}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	start := time.Now()
+	res, err := c.SyncMentions(ctx, SyncRequest{
+		ProjectID: "1397604555",
+		DateFrom:  "2026-08-01",
+		DateTo:    "2026-08-31",
+		Category:  "tiktok",
+		Limit:     100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("SyncMentions tiktok took %v, count=%d, returned=%d", time.Since(start), res.Count, len(res.Mentions))
+}

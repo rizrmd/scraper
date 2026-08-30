@@ -147,6 +147,14 @@ func (c *Client) syncPanelMentions(ctx context.Context, in SyncRequest) (*SyncRe
 		}
 		projectID = project.Project.ID
 	}
+	maxLimit := in.Limit
+	if maxLimit <= 0 {
+		maxLimit = 500
+	}
+	pageSize := 500
+	if maxLimit < pageSize {
+		pageSize = maxLimit
+	}
 	result := &SyncResult{ProjectID: strconv.FormatInt(projectID, 10), DateFrom: in.DateFrom, DateTo: in.DateTo, Mentions: []json.RawMessage{}}
 	for start := from; !start.After(to); {
 		end := start.AddDate(0, 0, 30)
@@ -155,7 +163,14 @@ func (c *Client) syncPanelMentions(ctx context.Context, in SyncRequest) (*SyncRe
 		}
 		result.Windows++
 		for page := 1; ; page++ {
-			variables := map[string]any{"projectId": projectID, "dateRange": map[string]string{"from": start.Format(time.DateOnly), "to": end.Format(time.DateOnly)}, "filters": panelFilters(in.Category), "page": page, "order": 0, "limit": 500}
+			variables := map[string]any{
+				"projectId": projectID,
+				"dateRange": map[string]string{"from": start.Format(time.DateOnly), "to": end.Format(time.DateOnly)},
+				"filters":   panelFilters(in.Category),
+				"page":      page,
+				"order":     0,
+				"limit":     pageSize,
+			}
 			var data struct {
 				Mentions struct {
 					Count   int            `json:"count"`
@@ -166,18 +181,38 @@ func (c *Client) syncPanelMentions(ctx context.Context, in SyncRequest) (*SyncRe
 				return nil, err
 			}
 			result.Pages++
+
+			// Parallel URL redirect resolution
+			var wg sync.WaitGroup
+			sem := make(chan struct{}, 20)
+			for i := range data.Mentions.Results {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					data.Mentions.Results[idx].OpenURL = c.ResolveRedirect(ctx, data.Mentions.Results[idx].OpenURL)
+				}(i)
+			}
+			wg.Wait()
+
 			for _, mention := range data.Mentions.Results {
 				if !matchesPanelCategory(panelCategoryName(mention.PageCategory), in.Category) {
 					continue
 				}
-				mention.OpenURL = ResolveTargetURL(ctx, mention.OpenURL)
 				normalized := normalizePanelMention(mention)
 				raw, _ := json.Marshal(normalized)
 				result.Mentions = append(result.Mentions, raw)
+				if len(result.Mentions) >= maxLimit {
+					break
+				}
 			}
-			if len(data.Mentions.Results) == 0 || page*500 >= data.Mentions.Count {
+			if len(data.Mentions.Results) == 0 || len(result.Mentions) >= maxLimit || page*pageSize >= data.Mentions.Count {
 				break
 			}
+		}
+		if len(result.Mentions) >= maxLimit {
+			break
 		}
 		start = end.AddDate(0, 0, 1)
 	}
@@ -279,8 +314,8 @@ func isBrand24OrRedirectHost(host string) bool {
 	return strings.Contains(host, "brand24") || host == "b24.io" || host == "b24.am"
 }
 
-// ResolveTargetURL extracts the direct target URL or follows HTTP redirects if it is a Brand24 redirect link.
-func ResolveTargetURL(ctx context.Context, raw string) string {
+// ResolveRedirect extracts the direct target URL or follows HTTP redirects if it is a Brand24 redirect link.
+func (c *Client) ResolveRedirect(ctx context.Context, raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || (!strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://")) {
 		return raw
@@ -315,7 +350,11 @@ func ResolveTargetURL(ctx context.Context, raw string) string {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	resp, err := redirectClient.Do(req)
+	client := c.http
+	if client == nil {
+		client = redirectClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		redirectCache.Store(raw, extracted)
 		return extracted
@@ -330,6 +369,12 @@ func ResolveTargetURL(ctx context.Context, raw string) string {
 
 	redirectCache.Store(raw, extracted)
 	return extracted
+}
+
+// ResolveTargetURL is a standalone function for redirect resolution using default client.
+func ResolveTargetURL(ctx context.Context, raw string) string {
+	c := &Client{http: redirectClient}
+	return c.ResolveRedirect(ctx, raw)
 }
 
 func normalizePanelMention(m panelMention) map[string]any {

@@ -166,6 +166,7 @@ type SyncRequest struct {
 	DateTo    string `json:"date_to"`
 	Sentiment string `json:"sentiment,omitempty"`
 	Category  string `json:"category,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
 }
 type SyncResult struct {
 	ProjectID string            `json:"project_id"`

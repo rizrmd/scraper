@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -175,24 +176,37 @@ func TestExtractAndResolveTargetURL(t *testing.T) {
 }
 
 func TestLiveBrand24Debug(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live test in short mode")
-	}
 	c, err := New(Config{AppURL: "https://app.brand24.com", DataURL: "https://api-data.brand24.com", Email: "officialcreatorhub.id@gmail.com", Password: "Creatorhub.24", Timeout: 30 * time.Second}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	start := time.Now()
-	res, err := c.SyncMentions(ctx, SyncRequest{
-		ProjectID: "1397604555",
-		DateFrom:  "2026-08-01",
-		DateTo:    "2026-08-31",
-		Category:  "tiktok",
-		Limit:     100,
-	})
-	if err != nil {
+	var data struct {
+		Projects []struct {
+			Project struct {
+				ID   int64  `json:"id"`
+				Name string `json:"name"`
+			} `json:"project"`
+		} `json:"getUserProjects"`
+	}
+	if err := c.graphQL(ctx, "getUserProjects", projectsQuery, map[string]any{}, &data); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("SyncMentions tiktok took %v, count=%d, returned=%d", time.Since(start), res.Count, len(res.Mentions))
+	for _, p := range data.Projects {
+		res, err := c.SyncMentions(ctx, SyncRequest{
+			ProjectID: strconv.FormatInt(p.Project.ID, 10),
+			DateFrom:  "2026-08-01",
+			DateTo:    "2026-08-31",
+			Category:  "facebook,instagram",
+			Limit:     10,
+		})
+		if err != nil {
+			t.Logf("Project %s (%d) err: %v", p.Project.Name, p.Project.ID, err)
+		} else {
+			t.Logf("Project %s (%d) META mentions count=%d", p.Project.Name, p.Project.ID, res.Count)
+			for i, m := range res.Mentions {
+				t.Logf("  Mention %d: %s", i, string(m))
+			}
+		}
+	}
 }

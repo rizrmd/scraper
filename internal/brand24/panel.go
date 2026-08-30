@@ -224,7 +224,7 @@ func normalizePanelMention(m panelMention) map[string]any {
 		date = parsed.Format(time.DateOnly)
 		timePart = parsed.Format("15:04:05")
 	}
-	return map[string]any{"id": m.ID, "date": date, "time": timePart, "title": m.Title, "content": m.Content, "source": m.OpenURL, "host": m.Host.Name, "category": panelCategoryName(m.PageCategory), "sentiment": panelSentimentName(m.Sentiment), "tags": m.Tags, "author": m.Author, "followers_count": m.FollowersCount, "views_count": m.ViewsCount, "influencer_score": m.InfluencerScore, "emotions": m.Emotions}
+	return map[string]any{"id": m.ID, "date": date, "time": timePart, "title": m.Title, "content": m.Content, "source": m.OpenURL, "url": m.OpenURL, "open_url": m.OpenURL, "openUrl": m.OpenURL, "host": m.Host.Name, "category": panelCategoryName(m.PageCategory), "sentiment": panelSentimentName(m.Sentiment), "tags": m.Tags, "author": m.Author, "followers_count": m.FollowersCount, "views_count": m.ViewsCount, "influencer_score": m.InfluencerScore, "emotions": m.Emotions}
 }
 
 func panelCategoryName(id int) string {

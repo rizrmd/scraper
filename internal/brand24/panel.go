@@ -3,6 +3,7 @@ package brand24
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -168,6 +170,7 @@ func (c *Client) syncPanelMentions(ctx context.Context, in SyncRequest) (*SyncRe
 				if !matchesPanelCategory(panelCategoryName(mention.PageCategory), in.Category) {
 					continue
 				}
+				mention.OpenURL = ResolveTargetURL(ctx, mention.OpenURL)
 				normalized := normalizePanelMention(mention)
 				raw, _ := json.Marshal(normalized)
 				result.Mentions = append(result.Mentions, raw)
@@ -214,7 +217,123 @@ func matchesPanelCategory(category, requested string) bool {
 	return false
 }
 
+var (
+	redirectCache  sync.Map
+	redirectClient = &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+)
+
+// ExtractTargetURL extracts the direct target URL from redirect parameters if present.
+func ExtractTargetURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || (!strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://")) {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	host := strings.ToLower(u.Hostname())
+	if !isBrand24OrRedirectHost(host) {
+		return raw
+	}
+
+	q := u.Query()
+	paramKeys := []string{"url", "target", "dest", "destination", "link", "to", "r", "redirect", "redirect_url", "orig", "original", "href", "u"}
+	for _, key := range paramKeys {
+		val := q.Get(key)
+		if val == "" {
+			continue
+		}
+		if unescaped, err := url.QueryUnescape(val); err == nil && unescaped != "" {
+			val = unescaped
+		}
+		val = strings.TrimSpace(val)
+		if strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://") {
+			return ExtractTargetURL(val)
+		}
+		if decoded, err := base64.StdEncoding.DecodeString(val); err == nil {
+			decStr := strings.TrimSpace(string(decoded))
+			if strings.HasPrefix(decStr, "http://") || strings.HasPrefix(decStr, "https://") {
+				return ExtractTargetURL(decStr)
+			}
+		}
+		if decoded, err := base64.URLEncoding.DecodeString(val); err == nil {
+			decStr := strings.TrimSpace(string(decoded))
+			if strings.HasPrefix(decStr, "http://") || strings.HasPrefix(decStr, "https://") {
+				return ExtractTargetURL(decStr)
+			}
+		}
+	}
+	return raw
+}
+
+func isBrand24OrRedirectHost(host string) bool {
+	return strings.Contains(host, "brand24") || host == "b24.io" || host == "b24.am"
+}
+
+// ResolveTargetURL extracts the direct target URL or follows HTTP redirects if it is a Brand24 redirect link.
+func ResolveTargetURL(ctx context.Context, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || (!strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://")) {
+		return raw
+	}
+	if cached, ok := redirectCache.Load(raw); ok {
+		if s, ok := cached.(string); ok && s != "" {
+			return s
+		}
+	}
+
+	extracted := ExtractTargetURL(raw)
+	if extracted != raw {
+		if u, err := url.Parse(extracted); err == nil && !isBrand24OrRedirectHost(strings.ToLower(u.Hostname())) {
+			redirectCache.Store(raw, extracted)
+			return extracted
+		}
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || !isBrand24OrRedirectHost(strings.ToLower(u.Hostname())) {
+		redirectCache.Store(raw, raw)
+		return raw
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, raw, nil)
+	if err != nil {
+		return raw
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := redirectClient.Do(req)
+	if err != nil {
+		redirectCache.Store(raw, extracted)
+		return extracted
+	}
+	defer resp.Body.Close()
+
+	finalURL := resp.Request.URL.String()
+	if finalURL != "" && !isBrand24OrRedirectHost(strings.ToLower(resp.Request.URL.Hostname())) {
+		redirectCache.Store(raw, finalURL)
+		return finalURL
+	}
+
+	redirectCache.Store(raw, extracted)
+	return extracted
+}
+
 func normalizePanelMention(m panelMention) map[string]any {
+	resolvedURL := ExtractTargetURL(m.OpenURL)
 	date, timePart := m.CreatedDate, ""
 	parsed, err := time.Parse(time.RFC3339, m.CreatedDate)
 	if err != nil {
@@ -224,7 +343,32 @@ func normalizePanelMention(m panelMention) map[string]any {
 		date = parsed.Format(time.DateOnly)
 		timePart = parsed.Format("15:04:05")
 	}
-	return map[string]any{"id": m.ID, "date": date, "time": timePart, "title": m.Title, "content": m.Content, "source": m.OpenURL, "url": m.OpenURL, "open_url": m.OpenURL, "openUrl": m.OpenURL, "host": m.Host.Name, "category": panelCategoryName(m.PageCategory), "sentiment": panelSentimentName(m.Sentiment), "tags": m.Tags, "author": m.Author, "followers_count": m.FollowersCount, "views_count": m.ViewsCount, "influencer_score": m.InfluencerScore, "emotions": m.Emotions}
+	author := m.Author
+	if authorMap, ok := author.(map[string]any); ok {
+		if rawAuthorURL, ok := authorMap["url"].(string); ok && rawAuthorURL != "" {
+			authorMap["url"] = ExtractTargetURL(rawAuthorURL)
+		}
+	}
+	return map[string]any{
+		"id":              m.ID,
+		"date":            date,
+		"time":            timePart,
+		"title":           m.Title,
+		"content":         m.Content,
+		"source":          resolvedURL,
+		"url":             resolvedURL,
+		"open_url":        resolvedURL,
+		"openUrl":         resolvedURL,
+		"host":            m.Host.Name,
+		"category":        panelCategoryName(m.PageCategory),
+		"sentiment":       panelSentimentName(m.Sentiment),
+		"tags":            m.Tags,
+		"author":          author,
+		"followers_count": m.FollowersCount,
+		"views_count":     m.ViewsCount,
+		"influencer_score": m.InfluencerScore,
+		"emotions":        m.Emotions,
+	}
 }
 
 func panelCategoryName(id int) string {

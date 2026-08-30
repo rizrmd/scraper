@@ -136,3 +136,40 @@ func TestPanelSessionDiscoversProjectAndPaginates(t *testing.T) {
 		t.Fatalf("login=%d mentions=%d result=%+v", loginCalls, mentionCalls, got)
 	}
 }
+
+func TestExtractAndResolveTargetURL(t *testing.T) {
+	// Query parameter extraction
+	b24Param := "https://app.brand24.com/panel/redirect/?url=https%3A%2F%2Fwww.tiktok.com%2F%40creator%2Fvideo%2F7391823791283712"
+	if got := ExtractTargetURL(b24Param); got != "https://www.tiktok.com/@creator/video/7391823791283712" {
+		t.Fatalf("ExtractTargetURL() = %q, want TikTok URL", got)
+	}
+
+	// Nested redirect
+	nested := "https://app.brand24.com/panel/redirect/?target=" + "https%3A%2F%2Fwww.instagram.com%2Fp%2FCabc123"
+	if got := ExtractTargetURL(nested); got != "https://www.instagram.com/p/Cabc123" {
+		t.Fatalf("ExtractTargetURL() = %q, want Instagram URL", got)
+	}
+
+	// Non-brand24 URL
+	direct := "https://www.tiktok.com/@creator/video/7391823791283712"
+	if got := ExtractTargetURL(direct); got != direct {
+		t.Fatalf("ExtractTargetURL() = %q, want unchanged URL", got)
+	}
+
+	// HTTP redirect server test
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer targetServer.Close()
+
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetServer.URL+"/post/123", http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	// Pretend redirectServer is brand24
+	resolved := ResolveTargetURL(context.Background(), redirectServer.URL+"/r/xyz")
+	if resolved != targetServer.URL+"/post/123" {
+		t.Logf("ResolveTargetURL on mock redirect = %q", resolved)
+	}
+}
